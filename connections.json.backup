@@ -1,0 +1,11 @@
+{
+  "47.115.151.230": {
+    "name": "47.115.151.230",
+    "host": "47.115.151.230",
+    "port": 3306,
+    "username": "geeksman",
+    "password": "",
+    "database": "",
+    "use_ssh": false
+  }
+}
