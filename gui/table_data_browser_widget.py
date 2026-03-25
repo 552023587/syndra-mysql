@@ -55,11 +55,17 @@ class TableDataBrowserWidget(QWidget):
         row = index.row()
         col = index.column()
 
-        # Add copy operations if a cell is under the cursor
+        # Add row operations if a cell is under the cursor
         if index.isValid():
             copy_cell_action = menu.addAction("复制单元格")
             copy_row_action = menu.addAction("复制整行")
+            delete_row_action = menu.addAction("删除当前行")
             menu.addSeparator()
+
+        # Add export operations
+        export_csv_action = menu.addAction("📄 导出CSV")
+        export_json_action = menu.addAction("📋 导出JSON")
+        menu.addSeparator()
 
         # Add table operations
         rename_action = menu.addAction("重命名表")
@@ -71,12 +77,20 @@ class TableDataBrowserWidget(QWidget):
         if not action:
             return
 
-        # Handle copy operations
+        # Handle row operations
         if index.isValid():
             if action == copy_cell_action:
                 self._copy_cell(row, col)
             elif action == copy_row_action:
                 self._copy_row(row)
+            elif 'delete_row_action' in locals() and action == delete_row_action:
+                self.logic.delete_current_row(self, row)
+
+        # Handle export operations
+        if action == export_csv_action:
+            self.logic.export_data(self, "csv")
+        elif action == export_json_action:
+            self.logic.export_data(self, "json")
 
         # Handle table operations
         if action == rename_action:

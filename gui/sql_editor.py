@@ -40,8 +40,10 @@ class SqlTextEdit(QTextEdit):
 
         # Store table names for auto-completion
         self._table_names = []
+        # Store column names for auto-completion
+        self._column_names = []
 
-        # Combine keywords, functions, and table names for auto-completion
+        # Combine keywords, functions, table names, and column names for auto-completion
         self._rebuild_completion_model()
 
         self.completer.setWidget(self)
@@ -53,8 +55,15 @@ class SqlTextEdit(QTextEdit):
 
     def _rebuild_completion_model(self):
         """Rebuild the completion model with current keywords, functions, and table names."""
-        all_completions = SqlHighlighter.KEYWORDS + SqlHighlighter.FUNCTIONS + self._table_names
-        self.completer.setModel(QStringListModel(all_completions))
+        all_completions = SqlHighlighter.KEYWORDS + SqlHighlighter.FUNCTIONS + self._table_names + self._column_names
+        # Remove duplicates while preserving order
+        seen = set()
+        unique_completions = []
+        for item in all_completions:
+            if item not in seen:
+                seen.add(item)
+                unique_completions.append(item)
+        self.completer.setModel(QStringListModel(unique_completions))
 
     def set_table_names(self, table_names: list[str]):
         """
@@ -82,6 +91,31 @@ class SqlTextEdit(QTextEdit):
     def clear_table_names(self):
         """Clear all table names from auto-completion."""
         self._table_names = []
+        self._rebuild_completion_model()
+
+    def set_column_names(self, column_names: list[str]):
+        """
+        Set column names from all tables for auto-completion.
+
+        Args:
+            column_names: List of all column names from all tables
+        """
+        self._column_names = column_names
+        self._rebuild_completion_model()
+
+    def add_column_names(self, column_names: list[str]):
+        """
+        Add additional column names to auto-completion.
+
+        Args:
+            column_names: List of additional column names to add
+        """
+        self._column_names.extend(column_names)
+        self._rebuild_completion_model()
+
+    def clear_column_names(self):
+        """Clear all column names from auto-completion."""
+        self._column_names = []
         self._rebuild_completion_model()
 
     def insert_completion(self, completion: str):
