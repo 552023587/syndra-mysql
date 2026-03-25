@@ -24,6 +24,7 @@ import socket
 from contextlib import closing
 import re
 
+
 class SqlHighlighter(QSyntaxHighlighter):
     """SQL语法高亮器"""
     def __init__(self, parent=None):
