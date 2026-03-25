@@ -97,6 +97,25 @@ pip install sqlparse
 python main.py
 ```
 
+### 打包为 exe (Windows)
+
+安装 PyInstaller:
+```bash
+pip install pyinstaller
+```
+
+使用提供的 spec 文件打包:
+```bash
+pyinstaller Syndra-MySQL.spec
+```
+
+或者直接运行批处理脚本 (Windows):
+```
+build.bat
+```
+
+打包完成后，exe 文件在 `dist/` 目录下。
+
 ### 使用说明
 
 #### 连接数据库
@@ -223,6 +242,20 @@ pip install sqlparse
 ```bash
 python main.py
 ```
+
+### Build executable (Windows)
+
+Install PyInstaller:
+```bash
+pip install pyinstaller
+```
+
+Build using the provided spec file:
+```bash
+pyinstaller Syndra-MySQL.spec
+```
+
+The executable will be generated in the `dist/` directory.
 
 ### Usage
 

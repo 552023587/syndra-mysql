@@ -11,6 +11,25 @@ A PyQt6-based MySQL database management client with:
 
 import sys
 from PyQt6.QtWidgets import QApplication
+
+# Explicit imports for PyInstaller to find all modules
+import gui
+import gui.main_window
+import gui.sql_editor
+import gui.connection_dialog
+import gui.highlighter
+import gui.table_info_dialog
+import gui.table_data_browser_base
+import gui.table_data_browser_widget
+import gui.table_create_dialog
+import gui.table_modify_dialog
+import gui.sql_history_dialog
+import core
+import core.connection
+import core.workers
+import utils
+import utils.encryption
+
 from gui.main_window import MainWindow
 
 
