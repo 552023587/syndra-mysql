@@ -26,9 +26,12 @@ from gui.table_modify_dialog import TableModifyDialog
 from gui.sql_history_dialog import SqlHistoryDialog
 
 import os
+import logging
 import appdirs
 
 import pymysql
+
+logger = logging.getLogger(__name__)
 
 
 class MainWindow(QMainWindow):
@@ -60,6 +63,11 @@ class MainWindow(QMainWindow):
         # SQL history and saved queries file
         app_dir = appdirs.user_data_dir("syndra-mysql", "syndra")
         self.sql_history_file = os.path.join(app_dir, "sql_history.json")
+        # Settings file for layout persistence
+        self.settings_file = os.path.join(app_dir, "settings.json")
+
+        # Transaction settings - default to auto-commit for backward compatibility
+        self.auto_commit = True
 
         # Setup the complete UI
         self.setup_ui()
@@ -77,6 +85,7 @@ class MainWindow(QMainWindow):
 
         # Set initial splitter sizes
         splitter.setSizes([300, 1100])
+        self.central_splitter = splitter
         self.setCentralWidget(splitter)
 
         # Setup menu bar
@@ -87,8 +96,21 @@ class MainWindow(QMainWindow):
         self.setStatusBar(self.status_bar)
         self.status_bar.showMessage("就绪")
 
+        # Add transaction status indicator to status bar
+        self.transaction_label = QLabel("自动提交")
+        self.transaction_label.setStyleSheet("""
+            QLabel {
+                color: #666;
+                padding-right: 10px;
+            }
+        """)
+        self.status_bar.addPermanentWidget(self.transaction_label)
+
         # Initial tree population with all saved connections
         self.refresh_connection_tree()
+
+        # Load and restore saved layout settings
+        self.load_layout_settings()
 
     def setup_left_panel(self, parent: QSplitter):
         """
@@ -300,6 +322,27 @@ class MainWindow(QMainWindow):
         saved_queries_action = query_menu.addAction('📝 查看保存的查询')
         saved_queries_action.triggered.connect(self.show_saved_queries)
 
+        # Transaction menu
+        transaction_menu = menubar.addMenu('事务')
+
+        # Toggle auto-commit
+        self.auto_commit_action = QAction('自动提交', self)
+        self.auto_commit_action.setCheckable(True)
+        self.auto_commit_action.setChecked(self.auto_commit)
+        self.auto_commit_action.triggered.connect(self.toggle_auto_commit)
+        transaction_menu.addAction(self.auto_commit_action)
+
+        transaction_menu.addSeparator()
+
+        # Manual commit and rollback
+        commit_action = QAction('✔ 提交事务', self)
+        commit_action.triggered.connect(self.commit_transaction)
+        transaction_menu.addAction(commit_action)
+
+        rollback_action = QAction('✖ 回滚事务', self)
+        rollback_action.triggered.connect(self.rollback_transaction)
+        transaction_menu.addAction(rollback_action)
+
 
     def show_tree_context_menu(self, position):
         """
@@ -358,6 +401,8 @@ class MainWindow(QMainWindow):
             # Right-click on a connection
             refresh_action = menu.addAction("刷新")
             new_db_action = menu.addAction("新建数据库")
+            menu.addSeparator()
+            edit_action = menu.addAction("编辑连接")
             disconnect_action = menu.addAction("断开连接")
 
             action = menu.exec(self.db_tree.mapToGlobal(position))
@@ -366,6 +411,8 @@ class MainWindow(QMainWindow):
                 self.refresh_connection(item_name)
             elif action == new_db_action:
                 self.create_database(item_name)
+            elif action == edit_action:
+                self.edit_saved_connection(item_name)
             elif action == disconnect_action:
                 self.disconnect_connection(item_name)
 
@@ -398,6 +445,17 @@ class MainWindow(QMainWindow):
                 # Update the configuration
                 self.conn_manager.connections[name] = updated_config
                 self.conn_manager.save_connections()
+                # If already connected, disconnect the old connection first
+                if name in self.connections:
+                    # Close SSH tunnel if exists
+                    if 'tunnel' in self.connections[name]:
+                        tunnel = self.connections[name]['tunnel']
+                        if tunnel:
+                            tunnel.stop()
+                    if 'worker' in self.connections[name]:
+                        worker = self.connections[name]['worker']
+                        worker.close_connection()
+                    del self.connections[name]
                 self.refresh_connection_tree()
 
     def delete_saved_connection(self, name: str):
@@ -486,6 +544,11 @@ class MainWindow(QMainWindow):
         # Set as current connection
         self.current_connection = data['connection']
 
+        # Store SSH tunnel if exists
+        tunnel = data.get('tunnel')
+        self.current_tunnel = tunnel
+        self.connections[name]['tunnel'] = tunnel
+
         # Refresh the entire tree to show all connections with the newly connected one
         self.refresh_connection_tree()
 
@@ -494,11 +557,11 @@ class MainWindow(QMainWindow):
         all_column_names = []
 
         # Iterate through all connected connections and collect tables/columns
+        # Column names are already collected in worker thread for the new connection
         for conn_name in self.connections:
             if 'data' not in self.connections[conn_name]:
                 continue
             conn_data = self.connections[conn_name]['data']
-            connection = conn_data['connection']
 
             # Add all table names
             for db_name in conn_data['tables']:
@@ -506,21 +569,11 @@ class MainWindow(QMainWindow):
                     if table_name not in all_table_names:
                         all_table_names.append(table_name)
 
-            # Collect all column names
-            for db_name in conn_data['tables']:
-                for table_name in conn_data['tables'][db_name]:
-                    try:
-                        # Get columns for this table
-                        connection.select_db(db_name)
-                        with connection.cursor() as cursor:
-                            cursor.execute(f"DESCRIBE `{table_name}`;")
-                            cols = cursor.fetchall()
-                            for col in cols:
-                                col_name = col[0]
-                                if col_name not in all_column_names:
-                                    all_column_names.append(col_name)
-                    except Exception:
-                        pass
+            # Add column names from worker result for this connection
+            if 'all_column_names' in conn_data:
+                for col_name in conn_data['all_column_names']:
+                    if col_name not in all_column_names:
+                        all_column_names.append(col_name)
 
         # Update SQL editor auto-completion with all table and column names
         self.sql_editor.set_table_names(all_table_names)
@@ -538,6 +591,7 @@ class MainWindow(QMainWindow):
             msg_box: Progress message box to close
         """
         msg_box.close()
+        logger.error(f"Database connection failed: {error_msg}")
         QMessageBox.critical(self, "连接错误", f"连接失败: {error_msg}")
         self.status_bar.showMessage("连接失败")
 
@@ -628,6 +682,8 @@ class MainWindow(QMainWindow):
 
         # Create new browser widget and add as a new tab
         browser = TableDataBrowserWidget(self.current_connection, database, table, self.table_tabs)
+        # Pass auto-commit setting to browser logic
+        browser.logic.auto_commit = self.auto_commit
         self.table_tabs.addTab(browser, tab_title)
         self.table_tabs.setCurrentWidget(browser)
 
@@ -652,11 +708,13 @@ class MainWindow(QMainWindow):
                 self.current_connection.select_db(database)
                 with self.current_connection.cursor() as cursor:
                     cursor.execute(f"ALTER TABLE `{table}` RENAME TO `{new_name}`;")
-                    self.current_connection.commit()
+                    if self.auto_commit:
+                        self.current_connection.commit()
                     QMessageBox.information(self, "成功", f"表已重命名为: {new_name}")
                     # Refresh the database node in the tree
                     self.refresh_database_node(database)
             except Exception as e:
+                logger.error(f"Rename table failed: {str(e)}")
                 QMessageBox.critical(self, "错误", f"重命名失败: {str(e)}")
 
     def delete_table(self, database: str, table: str):
@@ -681,11 +739,13 @@ class MainWindow(QMainWindow):
                 self.current_connection.select_db(database)
                 with self.current_connection.cursor() as cursor:
                     cursor.execute(f"DROP TABLE `{table}`;")
-                    self.current_connection.commit()
+                    if self.auto_commit:
+                        self.current_connection.commit()
                     QMessageBox.information(self, "成功", f"表 '{table}' 已删除")
                     # Refresh the database node in the tree
                     self.refresh_database_node(database)
             except Exception as e:
+                logger.error(f"Delete table failed: {str(e)}")
                 QMessageBox.critical(self, "错误", f"删除失败: {str(e)}")
 
     def design_table(self, database: str, table: str):
@@ -709,6 +769,7 @@ class MainWindow(QMainWindow):
                 dialog = TableInfoDialog(table_info, self)
                 dialog.exec()
         except Exception as e:
+            logger.error(f"Failed to get table structure: {str(e)}")
             QMessageBox.critical(self, "错误", f"无法获取表结构: {str(e)}")
 
     def modify_table_structure(self, database: str, table: str):
@@ -761,11 +822,13 @@ class MainWindow(QMainWindow):
             try:
                 with self.current_connection.cursor() as cursor:
                     cursor.execute(f"CREATE DATABASE `{db_name}`;")
-                    self.current_connection.commit()
+                    if self.auto_commit:
+                        self.current_connection.commit()
                     QMessageBox.information(self, "成功", f"数据库 '{db_name}' 已创建")
                     # Refresh the entire connection tree
                     self.refresh_connection_tree()
             except Exception as e:
+                logger.error(f"Create database failed: {str(e)}")
                 QMessageBox.critical(self, "错误", f"创建数据库失败: {str(e)}")
 
     def delete_database(self, database: str):
@@ -788,11 +851,13 @@ class MainWindow(QMainWindow):
             try:
                 with self.current_connection.cursor() as cursor:
                     cursor.execute(f"DROP DATABASE `{database}`;")
-                    self.current_connection.commit()
+                    if self.auto_commit:
+                        self.current_connection.commit()
                     QMessageBox.information(self, "成功", f"数据库 '{database}' 已删除")
                     # Refresh the entire connection tree
                     self.refresh_connection_tree()
             except Exception as e:
+                logger.error(f"Delete database failed: {str(e)}")
                 QMessageBox.critical(self, "错误", f"删除数据库失败: {str(e)}")
 
     def refresh_connection_tree(self):
@@ -897,6 +962,11 @@ class MainWindow(QMainWindow):
             name: Connection name
         """
         if name in self.connections:
+            # Close SSH tunnel if exists
+            if 'tunnel' in self.connections[name]:
+                tunnel = self.connections[name]['tunnel']
+                if tunnel:
+                    tunnel.stop()
             if 'worker' in self.connections[name]:
                 worker = self.connections[name]['worker']
                 worker.close_connection()
@@ -1014,7 +1084,8 @@ class MainWindow(QMainWindow):
                     self.status_bar.showMessage(f"查询完成，返回 {len(results)} 行结果")
                 else:
                     # For non-SELECT queries, commit and show affected rows
-                    connection.commit()
+                    if self.auto_commit:
+                        connection.commit()
                     QMessageBox.information(
                         self, "成功",
                         f"执行完成，影响 {cursor.rowcount} 行"
@@ -1022,6 +1093,7 @@ class MainWindow(QMainWindow):
                     self.status_bar.showMessage(f"执行完成，影响 {cursor.rowcount} 行")
 
         except Exception as e:
+            logger.error(f"SQL execution failed: {str(e)}")
             QMessageBox.critical(self, "错误", f"SQL执行失败: {str(e)}")
             self.status_bar.showMessage("SQL执行失败")
 
@@ -1050,6 +1122,7 @@ class MainWindow(QMainWindow):
             self.sql_editor.setPlainText(formatted.strip())
             self.status_bar.showMessage("SQL格式化完成")
         except Exception as e:
+            logger.error(f"SQL formatting failed: {str(e)}")
             QMessageBox.critical(self, "格式化失败", f"无法格式化SQL: {str(e)}")
             self.status_bar.showMessage("SQL格式化失败")
 
@@ -1161,7 +1234,8 @@ class MainWindow(QMainWindow):
                     self.status_bar.showMessage(f"查询完成，返回 {len(results)} 行结果")
                 else:
                     # For non-SELECT queries, commit and show affected rows
-                    connection.commit()
+                    if self.auto_commit:
+                        connection.commit()
                     QMessageBox.information(
                         self, "成功",
                         f"执行完成，影响 {cursor.rowcount} 行"
@@ -1169,6 +1243,7 @@ class MainWindow(QMainWindow):
                     self.status_bar.showMessage(f"执行完成，影响 {cursor.rowcount} 行")
 
         except Exception as e:
+            logger.error(f"SQL execution failed: {str(e)}")
             QMessageBox.critical(self, "错误", f"SQL执行失败: {str(e)}")
             self.status_bar.showMessage("SQL执行失败")
 
@@ -1197,6 +1272,7 @@ class MainWindow(QMainWindow):
             sql_editor.setPlainText(formatted.strip())
             self.status_bar.showMessage("SQL格式化完成")
         except Exception as e:
+            logger.error(f"SQL formatting failed: {str(e)}")
             QMessageBox.critical(self, "格式化失败", f"无法格式化SQL: {str(e)}")
             self.status_bar.showMessage("SQL格式化失败")
 
@@ -1457,6 +1533,8 @@ class MainWindow(QMainWindow):
         """
         # Save connections when closing the application
         self.conn_manager.save_connections()
+        # Save layout settings
+        self.save_layout_settings()
         event.accept()
 
     def show_tab_bar_context_menu(self, position):
@@ -1631,3 +1709,121 @@ class MainWindow(QMainWindow):
         except Exception as e:
             self.detail_text.clear()
             self.info_label.setText(f"获取详情失败: {str(e)}")
+
+    def keyPressEvent(self, event):
+        """
+        Handle key press events for global shortcuts.
+
+        Ctrl+F: Focus and select content in table search bar.
+        """
+        # Check for Ctrl+F
+        if event.key() == Qt.Key.Key_F and event.modifiers() & Qt.KeyboardModifier.ControlModifier:
+            # Focus the table filter search box
+            self.table_filter.setFocus()
+            # Select all existing text for easy overwriting
+            self.table_filter.selectAll()
+            event.accept()
+            return
+
+        # Let parent handle other keys
+        super().keyPressEvent(event)
+
+    def save_layout_settings(self):
+        """Save current layout (splitter positions) and theme to settings file."""
+        try:
+            # Get current sizes from both splitters
+            central_sizes = self.central_splitter.sizes()
+            right_sizes = self.right_splitter.sizes()
+
+            settings = {
+                'central_splitter_sizes': central_sizes,
+                'right_splitter_sizes': right_sizes,
+                'dark_theme_enabled': self.dark_theme_enabled
+            }
+
+            # Ensure directory exists
+            app_dir = appdirs.user_data_dir("syndra-mysql", "syndra")
+            if not os.path.exists(app_dir):
+                os.makedirs(app_dir)
+
+            with open(self.settings_file, 'w', encoding='utf-8') as f:
+                import json
+                json.dump(settings, f, indent=2, ensure_ascii=False)
+        except Exception as e:
+            print(f"保存布局设置失败: {e}")
+
+    def load_layout_settings(self):
+        """Load and restore saved layout settings and theme from settings file."""
+        if not os.path.exists(self.settings_file):
+            return  # No settings file, use defaults
+
+        try:
+            with open(self.settings_file, 'r', encoding='utf-8') as f:
+                import json
+                settings = json.load(f)
+
+            # Restore main splitter sizes
+            if 'central_splitter_sizes' in settings and len(settings['central_splitter_sizes']) == 2:
+                self.central_splitter.setSizes(settings['central_splitter_sizes'])
+
+            # Restore right nested splitter sizes
+            if 'right_splitter_sizes' in settings and len(settings['right_splitter_sizes']) == 2:
+                self.right_splitter.setSizes(settings['right_splitter_sizes'])
+
+            # Restore theme setting
+            if 'dark_theme_enabled' in settings:
+                self.dark_theme_enabled = settings['dark_theme_enabled']
+                self.dark_theme_action.setChecked(self.dark_theme_enabled)
+                if self.dark_theme_enabled:
+                    self.toggle_dark_theme()
+        except Exception as e:
+            print(f"加载布局设置失败: {e}")
+
+    def toggle_auto_commit(self):
+        """Toggle between auto-commit and manual transaction mode."""
+        self.auto_commit = self.auto_commit_action.isChecked()
+
+        if self.auto_commit:
+            self.transaction_label.setText("自动提交")
+            self.transaction_label.setStyleSheet("QLabel { color: #666; padding-right: 10px; }")
+        else:
+            self.transaction_label.setText("⚠ 手动事务")
+            self.transaction_label.setStyleSheet("QLabel { color: #d9534f; padding-right: 10px; font-weight: bold; }")
+
+            # If entering manual mode and have active connection,提示用户
+            if self.current_connection:
+                self.status_bar.showMessage("已进入手动事务模式，请手动提交或回滚更改")
+
+    def commit_transaction(self):
+        """Commit current active transaction."""
+        if not self.current_connection:
+            QMessageBox.warning(self, "警告", "请先选择一个数据库连接")
+            return
+
+        try:
+            self.current_connection.commit()
+            self.status_bar.showMessage("事务已提交")
+            QMessageBox.information(self, "成功", "事务已成功提交")
+        except Exception as e:
+            logger.error(f"Transaction commit failed: {str(e)}")
+            QMessageBox.critical(self, "错误", f"提交失败: {str(e)}")
+
+    def rollback_transaction(self):
+        """Roll back current active transaction."""
+        if not self.current_connection:
+            QMessageBox.warning(self, "警告", "请先选择一个数据库连接")
+            return
+
+        try:
+            reply = QMessageBox.question(
+                self, "确认回滚",
+                "确定要回滚当前未提交的所有更改吗？\n此操作不可撤销！",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+            )
+            if reply == QMessageBox.StandardButton.Yes:
+                self.current_connection.rollback()
+                self.status_bar.showMessage("事务已回滚")
+                QMessageBox.information(self, "成功", "事务已回滚")
+        except Exception as e:
+            logger.error(f"Transaction rollback failed: {str(e)}")
+            QMessageBox.critical(self, "错误", f"回滚失败: {str(e)}")

@@ -1,0 +1,7 @@
+pymysql>=1.0.2
+PyQt6>=6.0.0
+sqlparse>=0.4.0
+sshtunnel>=0.4.0
+paramiko<3.0.0
+appdirs>=1.4.0
+cryptography>=41.0.0

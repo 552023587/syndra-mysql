@@ -10,7 +10,26 @@ A PyQt6-based MySQL database management client with:
 """
 
 import sys
+import logging
+import os
+import appdirs
 from PyQt6.QtWidgets import QApplication
+
+# Configure logging to file
+log_dir = appdirs.user_data_dir("syndra-mysql", "syndra")
+if not os.path.exists(log_dir):
+    os.makedirs(log_dir)
+log_file = os.path.join(log_dir, "syndra.log")
+
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(name)s:%(filename)s:%(lineno)d - %(message)s',
+    handlers=[
+        logging.FileHandler(log_file, encoding='utf-8'),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger(__name__)
 
 # Explicit imports for PyInstaller to find all modules
 import gui

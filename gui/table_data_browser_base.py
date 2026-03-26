@@ -5,6 +5,7 @@ This module contains all the shared business logic and widget creation
 for both dialog and widget versions of the table browser.
 """
 
+import logging
 from PyQt6.QtWidgets import (
     QVBoxLayout, QHBoxLayout, QPushButton, QLabel, QLineEdit,
     QSpinBox, QTableWidget, QTableWidgetItem, QMenu, QInputDialog,
@@ -13,6 +14,8 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt
 from pymysql import Connection
 from gui.table_info_dialog import TableInfoDialog
+
+logger = logging.getLogger(__name__)
 
 
 class TableDataBrowserLogic:
@@ -252,6 +255,7 @@ class TableDataBrowserLogic:
                 self.last_btn.setEnabled((self.current_page + 1) * self.page_size < self.total_rows)
 
         except Exception as e:
+            logger.error(f"Load data failed: {str(e)}")
             # The parent widget will be used for the message box
             if hasattr(self, 'parent_widget'):
                 parent = self.parent_widget
@@ -342,7 +346,8 @@ class TableDataBrowserLogic:
             try:
                 with self.connection.cursor() as cursor:
                     cursor.execute(f"ALTER TABLE `{self.table}` RENAME TO `{new_name}`;")
-                    self.connection.commit()
+                    if getattr(self, 'auto_commit', True):
+                        self.connection.commit()
                     QMessageBox.information(
                         parent_widget,
                         "成功", f"表已重命名为: {new_name}"
@@ -351,6 +356,7 @@ class TableDataBrowserLogic:
                     # Reload data with new table name
                     self.load_data()
             except Exception as e:
+                logger.error(f"Rename table failed in browser: {str(e)}")
                 QMessageBox.critical(
                     parent_widget,
                     "错误", f"重命名失败: {str(e)}"
@@ -373,12 +379,14 @@ class TableDataBrowserLogic:
             try:
                 with self.connection.cursor() as cursor:
                     cursor.execute(f"DROP TABLE `{self.table}`;")
-                    self.connection.commit()
+                    if getattr(self, 'auto_commit', True):
+                        self.connection.commit()
                     QMessageBox.information(
                         parent_widget,
                         "成功", f"表 '{self.table}' 已删除"
                     )
             except Exception as e:
+                logger.error(f"Delete table failed in browser: {str(e)}")
                 QMessageBox.critical(
                     parent_widget,
                     "错误", f"删除失败: {str(e)}"
@@ -399,6 +407,7 @@ class TableDataBrowserLogic:
                 dialog = TableInfoDialog(table_info, parent_widget)
                 dialog.exec()
         except Exception as e:
+            logger.error(f"Get table structure failed in browser: {str(e)}")
             QMessageBox.critical(
                 parent_widget,
                 "错误", f"无法获取表结构: {str(e)}"
@@ -499,6 +508,7 @@ class TableDataBrowserLogic:
                 QMessageBox.information(parent_widget, "成功", "行已删除")
                 self.load_data()
         except Exception as e:
+            logger.error(f"Delete row failed: {str(e)}")
             QMessageBox.critical(parent_widget, "错误", f"删除失败: {str(e)}")
 
     def save_all_changes(self):
@@ -661,6 +671,7 @@ class TableDataBrowserLogic:
             self.load_data()
 
         except Exception as e:
+            logger.error(f"Save changes failed: {str(e)}")
             QMessageBox.critical(parent_widget, "错误", f"保存失败: {str(e)}")
 
     def export_data(self, parent_widget, format_type: str):
@@ -724,6 +735,7 @@ class TableDataBrowserLogic:
                 f"成功导出 {len(data)} 行到文件:\n{file_path}"
             )
         except Exception as e:
+            logger.error(f"Export data failed: {str(e)}, file: {file_path}")
             QMessageBox.critical(
                 parent_widget,
                 "导出失败",
